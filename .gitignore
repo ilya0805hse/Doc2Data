@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.data/
+.env
+.env.*
+!.env.example
+*.py[cod]
+.DS_Store
+.obsidian/
+.Rhistory
+Doc2Data.zip
