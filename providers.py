@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import re
 import uuid
 import urllib.request
 import urllib.error
@@ -26,6 +27,10 @@ def normalize(config):
                 profile['model'] = config.get('model', profile['model'])
             if profile['id'] == 'ollama':
                 profile['base_url'] = config.get('ollama_url', profile['base_url'])
+    config.setdefault('ocr_enabled', True)
+    config.setdefault('ocr_languages', 'eng')
+    config.setdefault('vision_provider', '')
+    config.setdefault('vision_model', '')
     config.setdefault('provider', 'ollama')
     active = next(p for p in config['providers'] if p['id'] == config['provider'])
     config['model'] = active['model']
@@ -76,6 +81,26 @@ def update(config, body):
     url = urlsplit(profile['base_url'])
     if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password or url.query or url.fragment:
         raise ValueError('Use an http:// or https:// base URL without credentials, query, or fragment.')
+    if 'ocr_enabled' in body:
+        if not isinstance(body['ocr_enabled'], bool):
+            raise ValueError('OCR enabled must be true or false.')
+        result['ocr_enabled'] = body['ocr_enabled']
+    if 'ocr_languages' in body:
+        language = body['ocr_languages']
+        if not isinstance(language, str) or not re.fullmatch(r'[A-Za-z0-9_/]+(?:\+[A-Za-z0-9_/]+)*', language) or len(language) > 150:
+            raise ValueError('Use OCR language codes separated by +, for example eng+rus.')
+        result['ocr_languages'] = language
+    if 'vision_provider' in body:
+        vision_id = profile['id'] if body['vision_provider'] == 'new' else body['vision_provider']
+        if vision_id and not any(p['id'] == vision_id for p in result['providers']):
+            raise ValueError('Unknown vision provider.')
+        result['vision_provider'] = vision_id
+    if 'vision_model' in body:
+        if not isinstance(body['vision_model'], str):
+            raise ValueError('Vision model must be text.')
+        result['vision_model'] = body['vision_model'].strip()
+    if result['vision_provider'] and not result['vision_model']:
+        raise ValueError('Enter an image-capable vision model name.')
     result['provider'] = profile['id']
     return normalize(result)
 
@@ -90,7 +115,7 @@ def anthropic_payload(model, messages, tools):
             role = 'user'
             content = [dict(type='tool_result', tool_use_id=message['tool_call_id'], content=message['content'])]
         else:
-            content = [dict(type='text', text=message['content'])] if message.get('content') else []
+            content = copy.deepcopy(message['content']) if isinstance(message.get('content'), list) else [dict(type='text', text=message['content'])] if message.get('content') else []
             for call in message.get('tool_calls', []):
                 args = call['function']['arguments']
                 content.append(dict(type='tool_use', id=call['id'], name=call['function']['name'], input=json.loads(args) if isinstance(args, str) else args))

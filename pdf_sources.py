@@ -4,7 +4,7 @@ import re
 import threading
 import pymupdf
 
-PDF_LOCK = threading.Lock()
+PDF_LOCK = threading.RLock()
 
 def source_page(raw, page_number, passage='', values=None):
     with PDF_LOCK, pymupdf.open(stream=raw, filetype='pdf') as pdf:

@@ -8,13 +8,17 @@ DEFAULT_WORKSPACE = 'workspace-default'
 def migrate(connection):
     with connection() as db:
         db.executescript('''
+        CREATE TABLE IF NOT EXISTS visual_assets (document_id TEXT NOT NULL, id TEXT NOT NULL, location TEXT NOT NULL, context TEXT NOT NULL, data BLOB NOT NULL, width INTEGER, height INTEGER, words TEXT NOT NULL, PRIMARY KEY(document_id,id));
+        CREATE TABLE IF NOT EXISTS visual_locations (document_id TEXT NOT NULL, asset_id TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY(document_id,asset_id));
+        CREATE TABLE IF NOT EXISTS visual_cache (document_id TEXT NOT NULL, asset_id TEXT NOT NULL, cache_key TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(document_id,asset_id,cache_key));
+        CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, detail TEXT NOT NULL, error TEXT NOT NULL DEFAULT '', document_id TEXT, created REAL);
         CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, created REAL, deleted INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL, created REAL, updated REAL, deleted INTEGER DEFAULT 0);
         ''')
         for table, fields in {
             'workspaces': [('pinned', 'INTEGER NOT NULL DEFAULT 0')],
             'sessions': [('pinned', 'INTEGER NOT NULL DEFAULT 0')],
-            'documents': [('workspace_id', "TEXT DEFAULT 'workspace-default'"), ('deleted', 'INTEGER DEFAULT 0'), ('pinned', 'INTEGER NOT NULL DEFAULT 0')],
+            'documents': [('workspace_id', "TEXT DEFAULT 'workspace-default'"), ('deleted', 'INTEGER DEFAULT 0'), ('pinned', 'INTEGER NOT NULL DEFAULT 0'), ('warnings', "TEXT NOT NULL DEFAULT '[]'")],
             'runs': [('session_id','TEXT'),('status',"TEXT DEFAULT 'complete'"),('prompt',"TEXT DEFAULT ''"),('events',"TEXT DEFAULT '[]'"),('error',"TEXT DEFAULT ''")]
         }.items():
             existing={r['name'] for r in db.execute(f'PRAGMA table_info({table})')}

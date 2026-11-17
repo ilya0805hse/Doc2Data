@@ -37,10 +37,13 @@ class DocumentTests(unittest.TestCase):
         _,_,chunks=server.parse_document('invoice.pdf',stream.getvalue())
         self.assertEqual(chunks[0]['location'],'Page 1');self.assertIn('Total 120',chunks[0]['text'])
 
-    def test_scanned_pdf_has_actionable_error(self):
+    def test_scanned_pdf_retains_visual_for_inspection(self):
         from pypdf import PdfWriter
         writer=PdfWriter();writer.add_blank_page(width=100,height=100);stream=io.BytesIO();writer.write(stream)
-        with self.assertRaisesRegex(ValueError,'OCR'):server.parse_document('scan.pdf',stream.getvalue())
+        with patch('ingestion.ocr_status', return_value={'available':False,'languages':[],'message':'Install OCR'}):
+            _,_,chunks=server.parse_document('scan.pdf',stream.getvalue())
+        self.assertEqual(chunks[0]['source_type'],'visual')
+        self.assertEqual(chunks[0]['asset_id'],'a1')
 
     def test_retrieval_ranks_relevant_source(self):
         docs=[{'id':'d1','name':'a.txt','chunks':[{'id':'c1','location':'Text','text':'Unrelated apples'},{'id':'c2','location':'Text','text':'Invoice total 120'}]}]

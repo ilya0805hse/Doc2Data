@@ -4,6 +4,12 @@ A local-first, OpenCode-inspired workspace for extracting structured, source-lin
 
 ## Run
 
+On macOS, double-click **Open DocToData.command** (or its desktop shortcut). It opens Terminal, creates `.venv` if needed, checks package versions and imports, installs missing Python requirements, checks Tesseract and the configured OCR languages, starts the server, and opens your default browser once it is ready. With Homebrew available, missing Python/Tesseract/language packs are installed automatically. First-time installation requires internet access. Without Homebrew, missing optional OCR is reported; missing Python requires installing Python first.
+
+Keep the Terminal window open while using the app; press **Control+C** to stop it. Opening the shortcut again reuses an already-running DocToData server. Model-provider configuration and model downloads remain separate. For a dependency check without starting the app, run `./"Open DocToData.command" --check-only`.
+
+Manual startup:
+
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
@@ -29,7 +35,7 @@ cd /Users/i.a.chesnokov-posadskii/Desktop/DocToData
 - PDF text extraction via pypdf, Word via python-docx, Excel via openpyxl/xlrd.
 - Source-addressable chunks retain PDF pages, Word paragraphs/table rows, or spreadsheet sheet/row locations.
 - Local lexical RAG uses IDF-weighted keyword ranking. It does not require an embedding model or vector database.
-- Up to 10 agent iterations, with `search_documents`, `read_document`, and `submit_extraction` tools.
+- Up to 10 agent iterations, with `search_documents`, `read_document`, `list_visuals`, `inspect_visual`, and `submit_extraction` tools.
 - Ollama native `/api/chat`; OpenAI and DeepSeek Chat Completions tool calling. DeepSeek response messages, including reasoning fields, are preserved between tool turns.
 - Output validation checks table dimensions and a separate citation list for every non-null cell against passages actually exposed to the agent. This validates citation existence, not semantic correctness; inspect references for important data.
 - SQLite stores parsed text, completed runs, and settings in `.data/workspace.db`. Keys are kept on the server and not returned to the browser. The database is local plaintext, not an encrypted credential vault.
@@ -37,7 +43,7 @@ cd /Users/i.a.chesnokov-posadskii/Desktop/DocToData
 
 ## Limits
 
-Scanned/image-only PDFs need OCR first. Word header/footer text and embedded images are not extracted. Spreadsheet formulas use cached values, so save workbooks in Excel first if caches are missing. Very large documents may exceed model context limits; narrow the selected documents or prompt. A provider's tool-calling quality affects extraction quality. Stop requests take effect after an in-flight provider call returns or times out. Ollama requests use a 600-second socket timeout; other providers use 120 seconds. Requests, completed results, activity, and failures are stored in SQLite. In-flight jobs are marked interrupted after a server restart.
+Scanned PDFs and embedded Word pictures are indexed with optional local OCR and retained for visual inspection. Word header/footer text is not indexed as ordinary text; embedded pictures in those parts are retained. Native Word charts, SmartArt, and unsupported image formats may require export to PDF; processing warnings identify these cases. Spreadsheet formulas use cached values, so save workbooks in Excel first if caches are missing. Very large documents may exceed model context limits; narrow the selected documents or prompt. A provider's tool-calling quality affects extraction quality. Stop requests take effect after an in-flight provider call returns or times out. Ollama requests use a 600-second socket timeout; other providers use 120 seconds. Requests, completed results, activity, and failures are stored in SQLite. In-flight jobs are marked interrupted after a server restart.
 
 Selected source passages are sent to the chosen provider on each run. Ollama stays local if its configured URL is local; OpenAI and DeepSeek process these passages in the cloud. Google Fonts is used for optional typography, with system-font fallback.
 
@@ -90,3 +96,32 @@ Provider profiles, keys, and sessions persist in the local SQLite database under
 Model discovery loads automatically for saved connections and shortly after entering a key. Use **Fetch available models** to refresh, then choose from **Available models** and click **Save and use provider**. Discovery uses the draft connection without saving it or changing the active provider. OpenAI-compatible endpoints (including [DeepSeek](https://api-docs.deepseek.com/api/list-models/)) use `/models`; Claude uses its paginated Models API; Ollama lists installed models. Manual entry remains available for endpoints without discovery. Returned models are not guaranteed to support extraction tools. If you change a connection's base URL, re-enter its key before fetching models from the new address.
 
 Session actions are available from the three-dot button beside each session in the left panel: **Pin / Unpin**, **Rename**, and **Delete**. Pinned sessions stay above other sessions and persist in the local database. The chat header's right-hand button expands or collapses the evidence viewer. Existing databases receive an additive `sessions.pinned` column with existing sessions unpinned.
+
+
+## OCR and visual understanding
+
+Uploads process in the background, with progress displayed in the document panel. Native text is preserved. Original PDFs, DOCX files, and PNG/JPEG images are retained. Visual locations are indexed without retaining rendered images; pages (including vector charts) and embedded pictures are rendered on demand. Pages with no native text or substantial raster-image coverage, Word pictures, and standalone images receive local OCR. OCR renders are transient. Missing OCR dependencies/languages or unreadable pictures produce visible document warnings instead of silently discarding content. OCR does not run on every text-only page.
+
+Install Tesseract separately from Python dependencies. On macOS with Homebrew:
+
+```sh
+brew install tesseract tesseract-lang
+```
+
+On Debian/Ubuntu, install `tesseract-ocr` and the needed language packages, such as `tesseract-ocr-eng` and `tesseract-ocr-rus`. Tesseract must be on the server's PATH. Model providers → **OCR and visual understanding** shows installed languages. Set `eng+rus` for English and Russian, or other installed codes joined by `+`. This is explicit language selection, not automatic language detection. Settings apply to new uploads. Re-upload documents indexed before this feature to add OCR/visual sources.
+
+In the same settings, select a **Vision provider** and enter an image-capable **Vision model**. It uses that provider profile's saved URL and key independently of the main extraction model. The main model still needs tool calling. Ollama, OpenAI-compatible image chat, and Anthropic image messages are supported; not every model or compatible endpoint accepts images. Vision is disabled until configured. You can save a custom provider connection, then select your main extraction provider and choose the custom connection for vision.
+
+During extraction, the main model lists page/image locations and asks targeted questions through `inspect_visual`. Original images and nearby source text go to the selected vision provider at this point; uploads never call cloud models. Vision results contain typed observations: exact, estimated, description, or missing. The main model is instructed to preserve estimates and use null for missing values. These labels describe model output, not verified accuracy. Review evidence for important values.
+
+OCR citations display the retained image with measured OCR word boxes. Vision citations display the image, question, model, and observations without invented highlight coordinates. Answers are cached locally by image, provider endpoint, model, and exact question; cached observations also become searchable in subsequent runs. Initial image discovery uses page locations and surrounding native text/OCR; images are not automatically captioned by a cloud provider at upload.
+
+Limits: 5,000 PDF pages or visual sources, 25 megapixels per embedded image, 90 seconds per OCR image, two concurrent uploads, and 30 visual inspections per extraction. Large pages are rendered to at most 2,200 pixels on their longest side. Split large documents or use a higher-quality crop when fine labels are unreadable. OCR may duplicate native text on mixed pages; the source type distinguishes them. External linked DOCX pictures are never fetched.
+
+The SQLite migration adds document warnings and `visual_assets`, `visual_locations`, `visual_cache`, and `uploads` tables. Existing document chunks and extraction citations remain unchanged. These tables contain private source images/text; keep the database private. Completed uploads are atomic; failed uploads do not leave partially indexed documents. Uploads interrupted by a server restart are marked failed and can be uploaded again.
+
+### Per-request processing modes
+
+The prompt bar offers **Auto**, **Text only**, and **Manual visuals**. Auto lets the extraction agent inspect relevant visual sources. Text only uses native text and OCR, excludes cached vision observations and prior answer context, and blocks vision tools on the server. Manual visuals opens a picker for selected documents: scroll continuously through pages/images, check whole pages or switch to Select region and draw rectangles, then click Done. Regions save on release. Use the page-number field to jump; selection chips return to their pages. Document tabs switch between files. Nearby previews load on demand and distant images are released from memory. Every selected visual is inspected before extraction; no additional visual calls are allowed. Include titles, legends, and units when cropping. A configured vision provider is required for manual mode.
+
+Selections are scoped to the current session draft and selected documents (up to 30 per request). Crop coordinates follow the displayed page orientation and are retained with evidence; vision citations reopen the actual crop. Cache keys include the region. Existing uploads and citations remain usable; newly uploaded documents use lazy visual locations. No cloud calls occur during upload. OCR still runs during background upload processing, so large scans may take time before they become available.
