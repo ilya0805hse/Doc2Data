@@ -31,7 +31,7 @@ function renderSessions(){
  $('#session-title').textContent=state.sessions.find(s=>s.id===state.sessionId)?.title||'New session';
 }
 function renderDocs(){closeItemActions();$('#document-count').textContent=state.docs.length;$('#document-list').innerHTML=state.docs.length?state.docs.map(d=>`<div class="document-item"><input class="doc-checkbox" type="checkbox" aria-label="Select ${esc(d.name)}" data-doc="${esc(d.id)}" ${state.selected.has(d.id)?'checked':''}><span class="file-icon">${esc(d.kind.toUpperCase())}</span><div class="doc-info"><button class="doc-name" data-preview="${esc(d.id)}" title="${esc(d.name)}">${esc(d.name)}</button><div class="doc-meta">${d.kind==='pdf'?d.units+' pages':d.chunk_count+' passages'} · ${Math.max(1,Math.round(d.size/1024))} KB${d.warnings?.length?` · <span title="${esc(d.warnings.join(' · '))}">⚠ Processing warnings</span>`:''}</div></div>${d.pinned?'<span class="session-pin" aria-label="Pinned">◆</span>':''}<button class="icon-button session-more" data-document-menu="${esc(d.id)}" aria-label="Options for document ${esc(d.name)}" aria-haspopup="menu" aria-expanded="false">•••</button></div>`).join(''):'<div class="sidebar-empty">Add documents to this workspace to give the agent context.</div>';$$('[data-doc]').forEach(b=>b.onchange=()=>{b.checked?state.selected.add(b.dataset.doc):state.selected.delete(b.dataset.doc);updateComposer()});$$('[data-preview]').forEach(b=>b.onclick=()=>previewDocument(b.dataset.preview));$$('[data-document-menu]').forEach(b=>b.onclick=()=>openItemActions('documents',state.docs.find(d=>d.id===b.dataset.documentMenu),b));updateComposer()}
-function updateComposer(){renderVisualSelections();const run=activeRun();$('#run-btn').classList.toggle('is-running',!!run);$('#run-btn').innerHTML=run?'■':icon('arrow');$('#run-btn').title=run?'Stop extraction':'Run extraction';$('#run-btn').setAttribute('aria-label',run?'Stop extraction':'Run extraction');$('#prompt').disabled=!!run;$('#context-count').textContent=`${state.selected.size} of ${state.docs.length} documents selected`;$('#run-btn').disabled=!state.workspaceId;$('#composer-model-name').textContent=state.settings.model}
+function updateComposer(){renderOutputControls();renderVisualSelections();const run=activeRun();$('#run-btn').classList.toggle('is-running',!!run);$('#run-btn').innerHTML=run?'■':icon('arrow');$('#run-btn').title=run?'Stop extraction':'Run extraction';$('#run-btn').setAttribute('aria-label',run?'Stop extraction':'Run extraction');$('#prompt').disabled=!!run;$('#context-count').textContent=`${state.selected.size} of ${state.docs.length} documents selected`;$('#run-btn').disabled=!state.workspaceId;$('#composer-model-name').textContent=state.settings.model}
 function renderSettings(){updateComposer()}
 function activityElapsed(turn,now=Date.now()){
  const events=turn.events?.length?turn.events:turn.result?.events||[];
@@ -64,7 +64,7 @@ function refreshActivityTimers(){
 }
 function activityHTML(turn){let events=turn.events?.length?turn.events:turn.result?.events||[];if(!events.length&&turn.status!=='running')return '';const status=turn.status;return `<div class="activity-frame"><details class="activity-block" ${status==='running'?'open':''}><summary>${statusIcon(status)}${status==='running'?'Agent is working':status==='error'?'Run failed':`${events.length} steps completed`}</summary><div class="activity-list">${events.map((e,i)=>{let st=e.status||((e.title==='Run ended')?'error':'complete');if(status!=='running'&&st==='running')st=status==='error'?'error':'complete';return `<div class="activity-item">${statusIcon(st)}<div><strong>${esc(e.title)}</strong><small>${esc(e.detail)}</small></div></div>`}).join('')}</div></details>${activityTimerHTML(turn)}</div>`}
 function cellRefs(row,j){return row.cell_references?.[j]||row.references||[]}
-function outputHTML(turn){const r=turn.result;if(!r?.columns)return '';const tab=state.tabs[turn.id]||'table',refs=Object.keys(r.references||{}),legacy=r.rows.some(row=>!row.cell_references);let content='';if(tab==='table'){content=`<div class="output-scroll"><table class="output-table"><thead><tr><th>#</th>${r.columns.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${r.rows.map((row,i)=>`<tr><td class="row-number">${i+1}</td>${row.values.map((v,j)=>{const cr=cellRefs(row,j).filter(ref=>r.references[ref]);return `<td>${v===null?'<span class="null-cell" title="Not found in selected sources">—</span>':cr.length?`<button class="cell-button ${state.evidence?.turn===turn.id&&state.evidence.row===i&&state.evidence.col===j?'selected':''}" data-cell-run="${esc(turn.id)}" data-row="${i}" data-col="${j}" title="View ${row.cell_references?'cell':'legacy row'} evidence"><span>${esc(v)}</span><span class="citation-number">${refs.indexOf(cr[0])+1}${cr.length>1?' +'+(cr.length-1):''}</span></button>`:`<span class="null-cell">${esc(v)} · no source</span>`}</td>`}).join('')}</tr>`).join('')}</tbody></table></div>`}else if(tab==='json'){content=`<pre class="json-output">${esc(JSON.stringify(r,null,2))}</pre>`}else{content=`<div class="output-scroll">${refs.map((ref,i)=>{const source=r.references[ref];return `<article class="reference-card"><h4>${i+1}. ${esc(source.document)} · ${esc(source.location)}</h4><button class="button" data-source-run="${esc(turn.id)}" data-ref="${esc(ref)}">View evidence ↗</button><p>${esc(source.text)}</p></article>`}).join('')}</div>`}return `<div class="output-card"><div class="output-toolbar"><div class="output-tabs">${['table','json','references'].map(t=>`<button class="output-tab ${t===tab?'active':''}" data-tab-run="${esc(turn.id)}" data-tab="${t}">${{table:'Table',json:'JSON',references:'Sources'}[t]}</button>`).join('')}</div><button class="button" data-export="${esc(turn.id)}">${icon('download')}Export</button></div>${content}<div class="output-footer"><span>${r.rows.length} rows · ${r.columns.length} columns</span><span>Click a value to inspect its source ↗</span></div>${legacy?'<div class="legacy-note">Earlier extraction · citations are row-level. Run again to generate precise citations for each cell.</div>':''}</div>`}
+function outputHTML(turn){const r=turn.result;if(!r?.columns)return '';const tab=state.tabs[turn.id]||'table',refs=Object.keys(r.references||{}),legacy=r.rows.some(row=>!row.cell_references);let content='';if(tab==='table'){content=`<div class="output-scroll"><table class="output-table"><thead><tr><th>#</th>${r.columns.map((c,j)=>`<th>${esc(c)}${r.output_mode==='mixed'&&j>=r.output_template.columns.length?' <small class="output-origin">Added</small>':''}</th>`).join('')}</tr></thead><tbody>${r.rows.map((row,i)=>`<tr><td class="row-number">${i+1}${r.output_mode==='mixed'&&r.output_template.rows.length&&i>=r.output_template.rows.length?' <small class="output-origin">Added</small>':''}</td>${row.values.map((v,j)=>{const cr=cellRefs(row,j).filter(ref=>r.references[ref]);const fixed=r.output_template?.rows[i]?.[j]!=null;return `<td>${fixed?`<span class="null-cell">${esc(v)} <small class="output-origin">Provided</small></span>`:v===null?'<span class="null-cell" title="Not found in selected sources">—</span>':cr.length?`<button class="cell-button ${state.evidence?.turn===turn.id&&state.evidence.row===i&&state.evidence.col===j?'selected':''}" data-cell-run="${esc(turn.id)}" data-row="${i}" data-col="${j}" title="View ${row.cell_references?'cell':'legacy row'} evidence"><span>${esc(v)}</span><span class="citation-number">${refs.indexOf(cr[0])+1}${cr.length>1?' +'+(cr.length-1):''}</span></button>`:`<span class="null-cell">${esc(v)} · no source</span>`}</td>`}).join('')}</tr>`).join('')}</tbody></table></div>`}else if(tab==='json'){content=`<pre class="json-output">${esc(JSON.stringify(r,null,2))}</pre>`}else{content=`<div class="output-scroll">${refs.map((ref,i)=>{const source=r.references[ref];return `<article class="reference-card"><h4>${i+1}. ${esc(source.document)} · ${esc(source.location)}</h4><button class="button" data-source-run="${esc(turn.id)}" data-ref="${esc(ref)}">View evidence ↗</button><p>${esc(source.text)}</p></article>`}).join('')}</div>`}return `<div class="output-card"><div class="output-toolbar"><div class="output-tabs">${['table','json','references'].map(t=>`<button class="output-tab ${t===tab?'active':''}" data-tab-run="${esc(turn.id)}" data-tab="${t}">${{table:'Table',json:'JSON',references:'Sources'}[t]}</button>`).join('')}</div><button class="button" data-export="${esc(turn.id)}">${icon('download')}Export</button></div>${content}<div class="output-footer"><span>${r.rows.length} rows · ${r.columns.length} columns</span><span>Click a value to inspect its source ↗</span></div>${legacy?'<div class="legacy-note">Earlier extraction · citations are row-level. Run again to generate precise citations for each cell.</div>':''}</div>`}
 // Preserve each activity panel across polling renders, including collapsed panels.
 function captureActivityState(container){
  const panels=new Map();
@@ -258,10 +258,130 @@ async function upload(files){
  }}finally{progress.remove()}
 }
 async function removeDocument(id,wid=state.workspaceId){try{await api('documents/delete',{id,workspace_id:wid});if(state.workspaceId===wid){state.selected.delete(id);await refreshItems('documents',wid)}toast('Document removed from this workspace. Saved evidence is retained.')}catch(e){toast(e.message)}}
+const outputDrafts=new Map();
+const maxTemplateColumns=40, maxTemplateRows=200;
+function outputDraftKey(){return state.sessionId||'new:'+state.workspaceId}
+function outputDraft(){return outputDrafts.get(outputDraftKey())||{mode:'vibing',table:null}}
+function renderOutputControls(){
+ const {mode}=outputDraft();
+ $$('#output-modes button').forEach(button=>button.setAttribute('aria-pressed',String(button.value===mode)));
+ $('#edit-output-table').classList.toggle('hidden',mode==='vibing');
+}
+$('#output-modes').onclick=e=>{
+ const button=e.target.closest('button');
+ if(!button)return;
+ const draft={...outputDraft(),mode:button.value};
+ outputDrafts.set(outputDraftKey(),draft);
+ renderOutputControls();
+ clearStaleCloudConfirmation();
+ if(draft.mode!=='vibing'&&!draft.table)openOutputEditor();
+};
+$('#edit-output-table').onclick=openOutputEditor;
+
+function openOutputEditor(){
+ const draft=outputDraft(), key=outputDraftKey();
+ let {columns,rows}=structuredClone(draft.table||{columns:[''],rows:[]});
+ modal('Edit output table',`
+  <p>${draft.mode==='strict'?'The result uses these exact columns and any rows you add.':'The result starts with this table and may append relevant rows or columns.'}
+  Enter fixed values such as years or labels, and leave cells blank for the model to fill. With headers only, the model creates rows for matching records.</p>
+  <div class="template-tools">
+   <button type="button" class="button" id="template-add-row">Add row</button>
+   <button type="button" class="button" id="template-add-column">Add column</button>
+   <button type="button" class="button" id="template-import-button">Import CSV or XLSX</button>
+   <input type="file" id="template-import-file" accept=".csv,.xlsx" hidden>
+  </div>
+  <div id="template-import-preview" hidden></div>
+  <div id="template-grid" class="template-scroll"></div>
+  <p id="template-status" role="status"></p>
+  <div class="modal-actions"><button type="button" class="button" id="template-cancel">Cancel</button><button type="button" class="button dark" id="template-save">Use table</button></div>`);
+ const grid=$('#template-grid'), status=$('#template-status'), preview=$('#template-import-preview');
+ const render=()=>{
+  grid.innerHTML=`<table><thead><tr><th scope="col">Row</th>${columns.map((name,i)=>`<th scope="col"><div class="template-header"><input aria-label="Column ${i+1} name" data-header="${i}" maxlength="1000" placeholder="Column name" value="${esc(name)}"><button type="button" class="icon-button" aria-label="Remove column ${i+1}" data-drop-column="${i}" ${columns.length===1?'disabled':''}>×</button></div></th>`).join('')}</tr></thead>
+  <tbody>${rows.map((row,i)=>`<tr><th scope="row"><button type="button" class="icon-button" aria-label="Remove row ${i+1}" data-drop-row="${i}">×</button>${i+1}</th>${row.map((value,j)=>`<td><input aria-label="Row ${i+1}, column ${j+1}" data-row="${i}" data-column="${j}" maxlength="1000" placeholder="Fill from sources" value="${esc(value)}"></td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  $('#template-add-column').disabled=columns.length>=maxTemplateColumns;
+  $('#template-add-row').disabled=rows.length>=maxTemplateRows;
+ };
+ grid.oninput=e=>{
+  const {header,row,column}=e.target.dataset;
+  if(header!==undefined)columns[Number(header)]=e.target.value;
+  if(row!==undefined)rows[Number(row)][Number(column)]=e.target.value||null;
+  status.textContent='';
+ };
+ grid.onclick=e=>{
+  const {dropColumn,dropRow}=e.target.dataset;
+  if(dropColumn!==undefined){
+   columns.splice(Number(dropColumn),1);
+   rows.forEach(row=>row.splice(Number(dropColumn),1));
+  }else if(dropRow!==undefined)rows.splice(Number(dropRow),1);
+  else return;
+  render();
+ };
+ $('#template-add-column').onclick=()=>{
+  columns.push('');rows.forEach(row=>row.push(null));render();
+  grid.querySelector(`[data-header="${columns.length-1}"]`).focus();
+ };
+ $('#template-add-row').onclick=()=>{
+  rows.push(columns.map(()=>null));render();
+  grid.querySelector(`[data-row="${rows.length-1}"]`).focus();
+ };
+ $('#template-import-button').onclick=()=>$('#template-import-file').click();
+ $('#template-import-file').onchange=async e=>{
+  const file=e.target.files[0];
+  e.target.value='';
+  if(!file)return;
+  if(file.size>2*1024*1024){status.textContent='Choose a file up to 2 MB.';return}
+  const button=$('#template-import-button');
+  button.disabled=true;preview.hidden=true;status.textContent='Reading table…';
+  try{
+   const data=await readBase64(file);
+   const {grid: imported}=await api('output-template/import',{name:file.name,data});
+   if(!grid.isConnected||!$('#modal').open)return;
+   status.textContent='';
+   preview.hidden=false;
+   preview.innerHTML=`<p><strong>${esc(file.name)}</strong>${file.name.toLowerCase().endsWith('.xlsx')?' · First worksheet':''}</p>
+    <label>Header row <select id="template-import-header">${imported.map((row,i)=>row.some(value=>value.trim())?`<option value="${i}">${i+1}</option>`:'').join('')}</select></label>
+    <label><input type="checkbox" id="template-import-fixed" checked> Keep populated cells as fixed values</label>
+    <div class="template-scroll" id="template-import-grid"></div>
+    <button type="button" class="button" id="template-import-apply">Replace table with import</button>`;
+   const header=$('#template-import-header');
+   const renderPreview=()=>{
+    const start=Number(header.value);
+    $('#template-import-grid').innerHTML=`<table><thead><tr>${imported[start].map(value=>`<th>${esc(value)}</th>`).join('')}</tr></thead>
+     <tbody>${imported.slice(start+1,start+6).map(row=>`<tr>${row.map(value=>`<td>${esc(value)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+   };
+   header.onchange=renderPreview;renderPreview();
+   $('#template-import-apply').onclick=()=>{
+    const start=Number(header.value), keep=$('#template-import-fixed').checked;
+    const body=imported.slice(start+1).filter(row=>row.some(value=>value.trim()));
+    const width=Math.max(imported[start].length,...body.map(row=>row.length));
+    columns=Array.from({length:width},(_,i)=>imported[start][i]||'');
+    rows=body.map(row=>columns.map((_,i)=>keep&&row[i]?row[i]:null));
+    preview.hidden=true;render();
+   };
+  }catch(error){if(grid.isConnected)status.textContent=error.message||'Could not read the table.'}
+  finally{button.disabled=false}
+ };
+ $('#template-cancel').onclick=()=>$('#modal').close();
+ $('#template-save').onclick=()=>{
+  if(columns.some(name=>!name.trim())){status.textContent='Enter a name for every column.';return}
+  if(new Set(columns.map(name=>name.trim().toLowerCase())).size!==columns.length){status.textContent='Use a different name for every column.';return}
+  if(key!==outputDraftKey()){$('#modal').close();return}
+  outputDrafts.set(key,{mode:draft.mode,table:{columns,rows}});
+  clearStaleCloudConfirmation();
+  $('#modal').close();
+  $('#edit-output-table').focus();
+ };
+ render();
+ grid.querySelector('input').focus();
+}
+
 let pendingCloudRun=null, submittingRun=false;
 function extractionRequest(){
- return {session_id:state.sessionId,prompt:$('#prompt').value.trim(),document_ids:[...state.selected],
-  processing_mode:$('#processing-mode').value,visual_selections:state.visualSelections};
+ const {mode,table}=outputDraft();
+ const prompt=$('#prompt').value.trim()||(mode!=='vibing'?'Fill the output table from the selected documents.':'');
+ return {session_id:state.sessionId,prompt,document_ids:[...state.selected],
+  processing_mode:$('#processing-mode').value,visual_selections:state.visualSelections,
+  output_mode:mode,output_template:mode==='vibing'?null:table};
 }
 function clearCloudConfirmation(){
  pendingCloudRun=null;
@@ -275,7 +395,7 @@ function showCloudConfirmation(request,targets){
  pendingCloudRun={snapshot:JSON.stringify(request),targets};
  panel.innerHTML=`<strong id="cloud-confirmation-title" tabindex="-1">Confirm sending information to cloud or remote providers</strong>
   <ul>${targets.map(target=>`<li><strong>${target.kind==='text'?'Text':'Vision'}</strong> · ${esc(target.name)} · ${esc(target.model)} (${esc(target.endpoint)})</li>`).join('')}</ul>
-  <p>Selected document text or images may leave this device. Confirm that the selected documents and your request contain no sensitive or confidential information.</p>
+  <p>Selected document text or images may leave this device. Confirm that the selected documents${request.output_template?', your request':' and your request'}${request.output_template?', and your output table':''} contain no sensitive or confidential information.</p>
   <div class="cloud-confirmation-actions"><button type="button" class="button" id="cloud-cancel">Cancel</button><button type="button" class="button dark" id="cloud-confirm">Confirm and run</button></div>`;
  panel.hidden=false;
  $('#cloud-confirmation-title').focus();
@@ -290,7 +410,8 @@ function showCloudConfirmation(request,targets){
 }
 async function submitExtraction(confirmedRemoteTargets){
  if(submittingRun)return;
- const request=extractionRequest();
+ const request=extractionRequest(), draft=outputDraft();
+ if(request.output_mode!=='vibing'&&!request.output_template){openOutputEditor();return}
  if(!request.prompt){toast('Describe what you want to extract.');return}
  if(!request.document_ids.length){toast('Add and select documents in the left panel first.');return}
  submittingRun=true;
@@ -300,7 +421,9 @@ async function submitExtraction(confirmedRemoteTargets){
    await createSession();
    if(!state.sessionId||workspace!==state.workspaceId)return;
    state.visualSelections=request.visual_selections;
+   outputDrafts.set(outputDraftKey(),draft);
    $('#prompt').value=request.prompt;
+   updateComposer();
    request.session_id=state.sessionId;
   }
   const {id}=await api('runs',{...request,confirmed_remote_targets:confirmedRemoteTargets});

@@ -70,6 +70,34 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(server.JOBS['test']['result']['references']['d1:c1']['document'],'invoice.txt')
         self.assertEqual(provider.call_count,11)
         with server.connection() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0],1)
+    def test_strict_template_rejects_changed_columns_and_preserves_fixed_cells(self):
+        template = {'columns':['Vendor','Total'],'rows':[['Acme',None]]}
+        server.JOBS['test'].update(output_mode='strict',output_template=template)
+        rows = [{'values':['Acme',120],'cell_references':[[],['d1:c1']]}]
+        answers = [
+            self.call('submit_extraction',{'summary':'Renamed','columns':['Name','Total'],'rows':rows}),
+            self.call('submit_extraction',{'summary':'Filled','columns':template['columns'],'rows':rows}),
+        ]
+        with patch.object(server,'provider_call',side_effect=answers) as provider:
+            server.run_agent('test','Extract totals',['d1'],{'provider':'ollama','model':'test'})
+        job = server.JOBS['test']
+        self.assertEqual(job['status'],'complete')
+        self.assertEqual(job['result']['output_template'],template)
+        self.assertEqual(job['result']['rows'][0]['cell_references'],[[],['d1:c1']])
+        self.assertEqual(provider.call_count,2)
+        self.assertIn('Output mode: strict',provider.call_args.args[1][0]['content'])
+
+    def test_mixed_template_accepts_append_only_with_citations(self):
+        template = {'columns':['Vendor'],'rows':[['Acme']]}
+        server.JOBS['test'].update(output_mode='mixed',output_template=template)
+        answer = self.call('submit_extraction',{'summary':'Filled','columns':['Vendor','Total'],
+            'rows':[{'values':['Acme',120],'cell_references':[[],['d1:c1']]}]})
+        with patch.object(server,'provider_call',return_value=answer):
+            server.run_agent('test','Extract totals',['d1'],{'provider':'ollama','model':'test'})
+        result = server.JOBS['test']['result']
+        self.assertEqual(result['output_mode'],'mixed')
+        self.assertEqual(result['columns'],['Vendor','Total'])
+
     def test_invalid_citation_rejected(self):
         answer=self.call('submit_extraction',{'summary':'Bad','columns':['Total'],'rows':[{'values':[120],'cell_references':[['invented:c1']]}]})
         with patch.object(server,'provider_call',side_effect=[answer, RuntimeError('Provider stopped')]) as provider:

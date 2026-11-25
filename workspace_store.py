@@ -56,17 +56,23 @@ def validate_documents(db, wid, ids):
     allowed={r['id'] for r in rows}
     if not set(ids)<=allowed: raise ValueError('All selected documents must belong to this workspace.')
 
-def validate_rows(columns, rows, seen):
+def validate_rows(columns, rows, seen, fixed_rows=()):
     if not isinstance(columns,list) or not columns or not all(isinstance(c,str) for c in columns):
         raise ValueError('Columns must be a nonempty list of strings.')
     if not isinstance(rows,list): raise ValueError('Rows must be a list.')
-    for row in rows:
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict): raise ValueError('Each row must be an object.')
         values=row.get('values')
         if not isinstance(values,list) or len(values)!=len(columns): raise ValueError('Each row must match the columns.')
         if any(isinstance(v,(dict,list)) for v in values): raise ValueError('Cell values must be scalar values or null.')
         cells=row.get('cell_references')
         if not isinstance(cells,list) or len(cells)!=len(columns): raise ValueError('Provide one cell_references array for each cell, in column order.')
-        for value,refs in zip(values,cells):
+        fixed = fixed_rows[i] if i < len(fixed_rows) else ()
+        for j, (value, refs) in enumerate(zip(values, cells)):
+            if j < len(fixed) and fixed[j] is not None:
+                if value != fixed[j] or refs != []:
+                    raise ValueError(f'Copy the fixed template value at row {i+1}, column {j+1} exactly and use an empty citation list.')
+                continue
             if not isinstance(refs,list) or not all(isinstance(r,str) and r in seen for r in refs): raise ValueError('Cell citations must refer to passages you have read.')
             if value is not None and not refs: raise ValueError('Every non-null cell must cite its own supporting source references.')
         row['references']=list(dict.fromkeys(r for refs in cells for r in refs))
