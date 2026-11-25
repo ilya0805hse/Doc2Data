@@ -6,7 +6,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 let state={workspaces:[],workspaceId:null,sessions:[],sessionId:null,docs:[],selected:new Set(),turns:[],settings:{provider:'ollama',model:'qwen3:8b',ollama_url:'http://localhost:11434'},tabs:{},evidence:null,visualSelections:[]};
 let toastTimer,loadVersion=0,pollTimer,pdfViewerToken=0,activityTimer;
 function toast(message){$('#toast').textContent=message;$('#toast').classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.add('hidden'),5500)}
-async function api(path,body){const r=await fetch('/api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(data.error||'Request failed');return data}
+async function api(path,body){const r=await fetch('/api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Object.assign(Error(data.error||'Request failed'),{remoteTargets:r.status===409?data.remote_targets:null});return data}
 function modal(title,html){if($('#modal').classList.contains('visual-picker-dialog'))disposeVisualPicker();$('#modal-title').textContent=title;$('#modal-body').innerHTML=html;if(!$('#modal').open)$('#modal').showModal()}
 $('#close-modal').onclick=()=>$('#modal').close();$('#modal').onclick=e=>{if(e.target===$('#modal'))$('#modal').close()};
 function statusIcon(status){return `<span class="step-icon ${status}" aria-label="${status}"><span>${status==='error'?'×':status==='running'?'':'✓'}</span></span>`}
@@ -258,8 +258,77 @@ async function upload(files){
  }}finally{progress.remove()}
 }
 async function removeDocument(id,wid=state.workspaceId){try{await api('documents/delete',{id,workspace_id:wid});if(state.workspaceId===wid){state.selected.delete(id);await refreshItems('documents',wid)}toast('Document removed from this workspace. Saved evidence is retained.')}catch(e){toast(e.message)}}
-$('#prompt').oninput=saveDraft;$('#prompt').onkeydown=e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();$('#prompt-form').requestSubmit()}};
-$('#prompt-form').onsubmit=async e=>{e.preventDefault();const run=activeRun();if(run){try{await api('runs/cancel',{id:run.id});toast('Stopping after the current provider request returns…')}catch(error){toast(error.message)}return}const prompt=$('#prompt').value.trim();if(!prompt){toast('Describe what you want to extract.');return}if(!state.selected.size){toast('Add and select documents in the left panel first.');return}try{if(!state.sessionId){const selections=state.visualSelections;await createSession();state.visualSelections=selections;$('#prompt').value=prompt}const sid=state.sessionId;const {id}=await api('runs',{session_id:sid,prompt,document_ids:[...state.selected],processing_mode:$('#processing-mode').value,visual_selections:state.visualSelections});if(sid!==state.sessionId)return;state.turns.push({id,prompt,status:'running',events:[{title:'Starting extraction',detail:'Retrieving selected source passages…',status:'running'}],result:{}});$('#prompt').value='';saveDraft();renderConversation();$('#conversation').scrollTop=$('#conversation').scrollHeight;state.sessions=await api('sessions?workspace_id='+state.workspaceId);renderSessions();schedulePoll()}catch(error){toast(error.message)}};
+let pendingCloudRun=null, submittingRun=false;
+function extractionRequest(){
+ return {session_id:state.sessionId,prompt:$('#prompt').value.trim(),document_ids:[...state.selected],
+  processing_mode:$('#processing-mode').value,visual_selections:state.visualSelections};
+}
+function clearCloudConfirmation(){
+ pendingCloudRun=null;
+ $('#cloud-confirmation').hidden=true;
+}
+function clearStaleCloudConfirmation(){
+ if(pendingCloudRun&&pendingCloudRun.snapshot!==JSON.stringify(extractionRequest()))clearCloudConfirmation();
+}
+function showCloudConfirmation(request,targets){
+ const panel=$('#cloud-confirmation');
+ pendingCloudRun={snapshot:JSON.stringify(request),targets};
+ panel.innerHTML=`<strong id="cloud-confirmation-title" tabindex="-1">Confirm sending information to cloud or remote providers</strong>
+  <ul>${targets.map(target=>`<li><strong>${target.kind==='text'?'Text':'Vision'}</strong> · ${esc(target.name)} · ${esc(target.model)} (${esc(target.endpoint)})</li>`).join('')}</ul>
+  <p>Selected document text or images may leave this device. Confirm that the selected documents and your request contain no sensitive or confidential information.</p>
+  <div class="cloud-confirmation-actions"><button type="button" class="button" id="cloud-cancel">Cancel</button><button type="button" class="button dark" id="cloud-confirm">Confirm and run</button></div>`;
+ panel.hidden=false;
+ $('#cloud-confirmation-title').focus();
+ $('#cloud-cancel').onclick=()=>{clearCloudConfirmation();$('#prompt').focus()};
+ $('#cloud-confirm').onclick=()=>{
+  clearStaleCloudConfirmation();
+  if(!pendingCloudRun)return;
+  const {targets}=pendingCloudRun;
+  clearCloudConfirmation();
+  submitExtraction(targets);
+ };
+}
+async function submitExtraction(confirmedRemoteTargets){
+ if(submittingRun)return;
+ const request=extractionRequest();
+ if(!request.prompt){toast('Describe what you want to extract.');return}
+ if(!request.document_ids.length){toast('Add and select documents in the left panel first.');return}
+ submittingRun=true;
+ const workspace=state.workspaceId;
+ try{
+  if(!state.sessionId){
+   await createSession();
+   if(!state.sessionId||workspace!==state.workspaceId)return;
+   state.visualSelections=request.visual_selections;
+   $('#prompt').value=request.prompt;
+   request.session_id=state.sessionId;
+  }
+  const {id}=await api('runs',{...request,confirmed_remote_targets:confirmedRemoteTargets});
+  if(request.session_id!==state.sessionId)return;
+  state.turns.push({id,prompt:request.prompt,status:'running',events:[{title:'Starting extraction',detail:'Retrieving selected source passages…',status:'running'}],result:{}});
+  if($('#prompt').value.trim()===request.prompt)$('#prompt').value='';
+  saveDraft();renderConversation();$('#conversation').scrollTop=$('#conversation').scrollHeight;
+  schedulePoll();
+  state.sessions=await api('sessions?workspace_id='+state.workspaceId);renderSessions();
+ }catch(error){
+  if(error.remoteTargets&&JSON.stringify(request)===JSON.stringify(extractionRequest())){
+   showCloudConfirmation(request,error.remoteTargets);
+  }else if(!error.remoteTargets)toast(error.message);
+ }finally{submittingRun=false}
+}
+$('#prompt').oninput=()=>{saveDraft();clearStaleCloudConfirmation()};
+$('#prompt').onkeydown=e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();$('#prompt-form').requestSubmit()}};
+$('#prompt-form').onsubmit=async e=>{
+ e.preventDefault();
+ const run=activeRun();
+ if(run){
+  try{await api('runs/cancel',{id:run.id});toast('Stopping after the current provider request returns…')}catch(error){toast(error.message)}
+  return;
+ }
+ clearStaleCloudConfirmation();
+ if(pendingCloudRun){$('#cloud-confirm').focus();return}
+ submitExtraction();
+};
 function selectCell(turnId,rowIndex,colIndex){const turn=state.turns.find(t=>t.id===turnId),r=turn.result,row=r.rows[rowIndex],refs=cellRefs(row,colIndex).filter(ref=>r.references[ref]);if(!refs.length){toast('No source available for this cell.');return}state.evidence={turn:turnId,row:rowIndex,col:colIndex,refs,ref:refs[0],value:row.values[colIndex],label:r.columns[colIndex],legacy:!row.cell_references,result:r};$$('.cell-button').forEach(b=>b.classList.toggle('selected',b.dataset.cellRun===turnId&&Number(b.dataset.row)===rowIndex&&Number(b.dataset.col)===colIndex));openEvidenceReference(refs[0])}
 function selectSource(turnId,ref){const r=state.turns.find(t=>t.id===turnId).result;state.evidence={turn:turnId,refs:[ref],ref,value:null,label:'Source passage',legacy:false,result:r};openEvidenceReference(ref)}
 function renderEvidenceContext(){const e=state.evidence,s=e.result.references[e.ref];$('#evidence-context').innerHTML=`<div class="evidence-context-card"><small>${esc(e.label)}${e.row!==undefined?' · row '+(e.row+1):''}</small>${e.value!==null?`<div class="evidence-value">${esc(e.value)}</div>`:''}<div class="evidence-source-name" title="${esc(s.document)}">${esc(s.document)} · ${esc(s.location)}</div>${e.refs.length>1?`<div class="evidence-ref-list">${e.refs.map((ref,i)=>`<button class="${ref===e.ref?'active':''}" data-evidence-ref="${esc(ref)}" title="${esc(e.result.references[ref]?.document)}">Source ${i+1}</button>`).join('')}</div>`:''}${e.legacy?'<div class="legacy-note">Legacy row citation. This source may support another cell in the same row.</div>':''}</div>`;$$('[data-evidence-ref]').forEach(b=>b.onclick=()=>openEvidenceReference(b.dataset.evidenceRef))}
@@ -275,6 +344,22 @@ async function init(){clearEvidence();renderConversation();try{state.settings=aw
 
 function settingsModal(){
  let chosen=state.settings.provider, view=0;
+ const modelLists=new Map();
+ const connectionSignature=p=>JSON.stringify([p.protocol,p.base_url,p.api_key||'',!!p.clear_key]);
+ const modelOptions=(provider,value)=>{
+  const cached=modelLists.get(provider?.id);
+  const models=cached&&cached.signature===connectionSignature(provider)?cached.models:[];
+  const names=[...new Set([value,...models].filter(Boolean))];
+  return '<option value="">Choose a model…</option>'+names.map(name=>`<option value="${esc(name)}" ${name===value?'selected':''}>${esc(name)}</option>`).join('')+'<option>+ Add new model</option>';
+ };
+ const modelField=(id,label,provider,value)=>`
+  <div class="form-field model-field"><label for="${id}-model">${label}</label>
+   <div class="model-field-controls">
+    <select id="${id}-model" ${provider?'':'disabled'}>${modelOptions(provider,value)}</select>
+    <button type="button" class="button" id="${id}-fetch" ${provider?'':'disabled'}>Fetch models</button>
+   </div>
+   <p id="${id}-model-status" class="model-status" role="status"></p>
+  </div>`;
  const processing={ocr_enabled:state.settings.ocr_enabled,ocr_languages:state.settings.ocr_languages,vision_provider:state.settings.vision_provider,vision_model:state.settings.vision_model};
  const drafts=Object.fromEntries(state.settings.providers.map(p=>[p.id,{...p}]));
  const capture=()=>{if($('#ocr-languages')){processing.ocr_enabled=$('#ocr-enabled').checked;processing.ocr_languages=$('#ocr-languages').value;processing.vision_provider=$('#vision-provider').value;processing.vision_model=$('#vision-model').value}const p=drafts[chosen];for(const field of ['name','model','base_url','protocol','api_key']){const input=$('#provider-'+field);if(input)p[field]=input.value}p.clear_key=$('#provider-clear-key')?.checked||false};
@@ -283,20 +368,17 @@ function settingsModal(){
   modal('Model providers',`<p>Choose a provider or add your own connection.</p><div class="provider-options" aria-label="Providers">${Object.values(drafts).map(item=>`<button class="provider-option ${chosen===item.id?'selected':''}" data-provider="${esc(item.id)}" aria-pressed="${chosen===item.id}"><span>${esc(item.name||'New custom provider')}</span><small>${item.id===state.settings.provider?'Active · ':''}${item.protocol==='ollama'?'Local model':'Cloud / custom API'}</small></button>`).join('')}</div><button class="button" id="provider-add">+ Add custom provider</button>
   <label class="form-field">Provider name<input id="provider-name" value="${esc(p.name)}"></label>
   <label class="form-field">API format<select id="provider-protocol">${[['openai','OpenAI compatible'],['anthropic','Anthropic (Claude)'],['ollama','Ollama']].map(([value,label])=>`<option value="${value}" ${p.protocol===value?'selected':''}>${label}</option>`).join('')}</select></label>
-  <label class="form-field">Model name<input id="provider-model" value="${esc(p.model)}" placeholder="Enter a tool-capable model name" list="model-list"><datalist id="model-list"></datalist></label>
   <label class="form-field">API base URL<input id="provider-base_url" value="${esc(p.base_url)}" placeholder="https://api.example.com/v1"></label>
   ${p.id==='qwen'?'<p>Use the base URL for your Qwen workspace and region.</p>':''}
   <label class="form-field">API key ${p.key_set?'· saved':''}<input id="provider-api_key" type="password" autocomplete="off" value="${esc(p.api_key||'')}" placeholder="${p.key_set?'Leave blank to keep saved key':'Optional for servers without authentication'}"></label>
   ${p.key_set?`<label class="provider-clear"><input type="checkbox" id="provider-clear-key" ${p.clear_key?'checked':''}> Remove stored API key</label>`:''}
-  <button class="button" id="discover-models">${p.protocol==='ollama'?'Find installed models':'Fetch available models'}</button>
-  <p id="model-status" role="status" aria-live="polite">${p.protocol==='ollama'?'Discover installed models from your server.':'Enter your API key to load available models automatically.'}</p>
-  <label class="form-field" id="available-models-field" hidden>Available models<select id="available-models"><option value="">Choose a model…</option></select></label>
+  ${modelField('provider','Available models',p,p.model)}
   <fieldset class="processing-settings"><legend>OCR and visual understanding</legend>
   <label class="provider-clear"><input type="checkbox" id="ocr-enabled" ${processing.ocr_enabled?'checked':''}> Read scanned text locally with OCR</label>
   <label class="form-field">OCR languages<input id="ocr-languages" value="${esc(processing.ocr_languages||'eng')}" placeholder="eng+rus"></label>
   <p id="ocr-status" role="status">Checking local OCR…</p><details id="ocr-language-details" hidden><summary>Installed OCR languages</summary><p id="ocr-language-list"></p></details>
   <label class="form-field">Vision provider<select id="vision-provider" aria-label="Vision provider"><option value="">Disabled</option>${Object.values(drafts).map(item=>`<option value="${esc(item.id)}" ${processing.vision_provider===item.id?'selected':''}>${esc(item.name||'New custom provider')}</option>`).join('')}</select></label>
-  <label class="form-field">Vision model<input id="vision-model" value="${esc(processing.vision_model||'')}" placeholder="An image-capable model on this provider"></label>
+  ${modelField('vision','Vision model',drafts[processing.vision_provider],processing.vision_model)}
   <p>The vision model is independent of your extraction model and uses the selected provider’s connection and key. Images and nearby text are sent only during extraction. OCR language changes apply to new uploads; re-upload older files to index their visuals.</p>
   </fieldset>
   <p class="notice">Sessions, documents, and provider settings are saved on this PC. API keys are stored in the local database and are never returned to the browser. Selected source passages are sent to your chosen provider during extraction.</p>
@@ -306,36 +388,52 @@ function settingsModal(){
   $('#provider-add').onclick=()=>{capture();drafts.new||={id:'new',name:'',protocol:'openai',base_url:'',model:''};chosen='new';show();$('#provider-name').focus()};
   $('#provider-protocol').onchange=()=>{capture();show()};
   $('#settings-cancel').onclick=()=>$('#modal').close();
-  $('#settings-save').onclick=async()=>{capture();const button=$('#settings-save');button.disabled=true;try{await api('settings',{...drafts[chosen],...processing,provider:chosen});state.settings=await api('settings');renderSettings();$('#modal').close();toast('Provider saved on this PC.')}catch(e){toast(e.message);button.disabled=false}};
-  const modelStatus=$('#model-status');
-  let requestVersion=0, discoveryTimer;
-  const connectionSignature=()=>JSON.stringify(['protocol','base_url','api_key'].map(f=>$('#provider-'+f)?.value).concat($('#provider-clear-key')?.checked||false));
-  const discover=async()=>{
-   clearTimeout(discoveryTimer);capture();const version=++requestVersion, signature=connectionSignature(), button=$('#discover-models'), status=$('#model-status');
-   button.disabled=true;status.textContent='Loading available models…';$('#available-models-field').hidden=true;
-   const stillCurrent=()=>status.isConnected&&view===currentView&&$('#modal').open&&version===requestVersion&&signature===connectionSignature();
-   try{
-    const models=await api('models',{...drafts[chosen],provider:chosen});
-    if(!stillCurrent())return;
-    $('#model-list').innerHTML=models.map(m=>`<option value="${esc(m)}"></option>`).join('');
-    const select=$('#available-models');select.innerHTML='<option value="">Choose a model…</option>'+models.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
-    const input=$('#provider-model');
-    if(!input.value.trim()&&models.length)input.value=models[0];
-    select.value=models.includes(input.value)?input.value:'';
-    $('#available-models-field').hidden=!models.length;
-    status.textContent=models.length?`${models.length} models found. Choose a tool-capable model below, or enter a name above.`:'No models returned. You can still enter a model name manually.';
-   }catch(error){if(stillCurrent())status.textContent=error.message}
-   finally{if(view===currentView&&version===requestVersion)button.disabled=false}
+  $('#settings-save').onclick=async()=>{capture();const button=$('#settings-save');button.disabled=true;try{await api('settings',{...drafts[chosen],...processing,provider:chosen});state.settings=await api('settings');clearCloudConfirmation();renderSettings();$('#modal').close();toast('Provider saved on this PC.')}catch(e){toast(e.message);button.disabled=false}};
+  const refreshModels=()=>{
+   $('#provider-model').innerHTML=modelOptions(p,p.model);
+   $('#vision-model').innerHTML=modelOptions(drafts[processing.vision_provider],processing.vision_model);
   };
-  $('#available-models').onchange=e=>{if(e.target.value){$('#provider-model').value=e.target.value;capture()}};
-  $('#discover-models').onclick=discover;
-  const autoDiscover=()=>{clearTimeout(discoveryTimer);discoveryTimer=setTimeout(()=>{if(!modelStatus.isConnected||view!==currentView||!$('#modal').open)return;capture();if(p.api_key?.trim()||p.key_set||p.protocol==='ollama')discover()},500)};
-  for(const field of ['api_key','base_url']){
-   $('#provider-'+field).oninput=()=>{requestVersion++;$('#discover-models').disabled=false;$('#available-models-field').hidden=true;$('#model-list').innerHTML='';$('#model-status').textContent='Connection changed. Fetch models to refresh the list.';autoDiscover()};
-   $('#provider-'+field).onchange=autoDiscover;
+  for(const id of ['provider','vision']){
+   const select=$('#'+id+'-model'), button=$('#'+id+'-fetch'), status=$('#'+id+'-model-status');
+   const getProvider=()=>id==='provider'?p:drafts[processing.vision_provider];
+   select.onchange=()=>{
+    if(select.selectedIndex===select.options.length-1){
+     const name=window.prompt(id==='vision'?'Enter an image-capable model name':'Enter a tool-capable model name')?.trim();
+     if(id==='provider')p.model=name||p.model;
+     else processing.vision_model=name||processing.vision_model;
+     refreshModels();
+    }
+    capture();
+   };
+   button.onclick=async()=>{
+    capture();
+    const provider=getProvider(), signature=connectionSignature(provider);
+    const stillCurrent=()=>view===currentView&&button.isConnected&&$('#modal').open;
+    button.disabled=true;status.textContent='Loading models…';
+    try{
+     const models=await api('models',{...provider,provider:provider.id});
+     if(!stillCurrent())return;
+     capture();
+     if(signature!==connectionSignature(provider)){
+      status.textContent='Connection changed. Fetch models again.';
+      return;
+     }
+     modelLists.set(provider.id,{signature,models});
+     refreshModels();
+     status.textContent=models.length?`${models.length} models found.`:'No models returned. You can add a model manually.';
+    }catch(error){if(stillCurrent())status.textContent=error.message}
+    finally{button.disabled=false}
+   };
   }
-  if($('#provider-clear-key'))$('#provider-clear-key').onchange=()=>{requestVersion++;$('#discover-models').disabled=false;$('#available-models-field').hidden=true;$('#model-list').innerHTML='';$('#model-status').textContent='Key preference changed. Fetch models to refresh the list.'};
-  if(p.key_set||p.api_key?.trim()||p.protocol==='ollama')discover();
+  $('#vision-provider').onchange=()=>{
+   capture();
+   processing.vision_model=processing.vision_provider===state.settings.vision_provider?state.settings.vision_model:'';
+   show();
+  };
+  for(const field of ['base_url','api_key','clear-key']){
+   const input=$('#provider-'+field);
+   if(input)input.oninput=()=>{capture();refreshModels()};
+  }
  };
  show();
 }
@@ -379,6 +477,7 @@ function renderVisualSelections(){
  const manual=$('#processing-mode').value==='manual';
  $('#select-visuals').classList.toggle('hidden',!manual);
  state.visualSelections=state.visualSelections.filter(s=>state.selected.has(s.document_id));
+ clearStaleCloudConfirmation();
  $('#visual-selections').innerHTML=manual?state.visualSelections.map((s,i)=>`<span class="visual-chip"><button type="button" data-open-selection="${i}" title="Review selection">${esc(s.label)}${s.crop?' · Region':''}</button><button type="button" data-remove-selection="${i}" aria-label="Remove ${esc(s.label)}">×</button></span>`).join(''):'';
  $$('[data-remove-selection]').forEach(b=>b.onclick=()=>{state.visualSelections.splice(Number(b.dataset.removeSelection),1);renderVisualSelections()});
  $$('[data-open-selection]').forEach(b=>b.onclick=()=>openVisualPicker(state.visualSelections[Number(b.dataset.openSelection)]));
@@ -395,7 +494,7 @@ async function openVisualPicker(selected){
   if(workspaceId!==state.workspaceId)return;
   if(!assets.length){toast('These documents have no visual sources. Older uploads may need to be uploaded again.');return}
   const documents=[...new Map(assets.map(a=>[a.document_id,a.document])).entries()];
-  modal('Select pages or regions',`<p>Scroll to browse. Select whole pages or use Select region to draw around a chart. Include titles, legends, and units.</p><div class="visual-document-tabs" role="tablist" aria-label="Documents">${documents.map(([id,name])=>`<button type="button" class="button" role="tab" data-picker-document="${esc(id)}">${esc(name)}</button>`).join('')}</div><div class="visual-picker-toolbar"><div role="group" aria-label="Selection tool"><button type="button" class="button" id="visual-scroll-tool" aria-pressed="true">Scroll</button><button type="button" class="button" id="visual-region-tool" aria-pressed="false">Select region</button></div><label>Page <input id="visual-page-jump" type="number" min="1" value="1" aria-label="Jump to page"> <span id="visual-page-total"></span></label></div><div id="visual-picker-stage" tabindex="0" aria-label="Scrollable document preview"></div><div id="visual-picker-status" role="status"></div><div id="visual-picker-tray" aria-label="Selected visuals"></div><div class="modal-actions"><button type="button" class="button dark" id="visual-done">Done</button></div>`);
+  modal('Select pages or regions',`<p>Scroll to browse. Select whole pages or use Select region to draw around a chart. Include titles, legends, and units.</p><div class="visual-document-tabs" role="tablist" aria-label="Documents">${documents.map(([id,name])=>`<button type="button" class="button" role="tab" data-picker-document="${esc(id)}">${esc(name)}</button>`).join('')}</div><div class="visual-picker-toolbar"><div class="visual-tool-switch" role="group" aria-label="Selection tool"><button type="button" class="button" id="visual-scroll-tool" aria-pressed="true">Scroll</button><button type="button" class="button" id="visual-region-tool" aria-pressed="false">Select region</button></div><label>Page <input id="visual-page-jump" type="number" min="1" value="1" aria-label="Jump to page"> <span id="visual-page-total"></span></label></div><div id="visual-picker-stage" tabindex="0" aria-label="Scrollable document preview"></div><div id="visual-picker-status" role="status"></div><div id="visual-picker-tray" aria-label="Selected visuals"></div><div class="modal-actions"><button type="button" class="button dark" id="visual-done">Done</button></div>`);
   const dialog=$('#modal'),stage=$('#visual-picker-stage');dialog.classList.add('visual-picker-dialog');
   let alive=true,activeDocument=selected?.document_id||documents[0][0],pages=[],tool='scroll',space=false,observer=null,active=0,queue=[],generation=0;
   const same=(s,a)=>s.document_id===a.document_id&&s.asset_id===a.asset_id;
@@ -409,6 +508,7 @@ async function openVisualPicker(selected){
   $('#visual-scroll-tool').onclick=()=>{tool='scroll';setTool()};$('#visual-region-tool').onclick=()=>{tool='region';setTool()};
   $('#visual-done').onclick=()=>dialog.close();
   function update(){
+   clearStaleCloudConfirmation();
    renderVisualSelections();
    $('#visual-picker-status').textContent=`${state.visualSelections.length} of 30 selections · selections are saved as you go`;
    pages.forEach((a,i)=>{

@@ -1,8 +1,9 @@
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import server
 import workspace_store as ws
 
@@ -55,6 +56,47 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(run['session_id'],sid);self.assertEqual(run['status'],'complete')
         self.assertEqual(json.loads(run['result'])['rows'][0]['cell_references'],[['d1:c1']])
         self.assertTrue(all(e['status']=='complete' for e in json.loads(run['events'])))
+    def test_remote_run_requires_confirmation_for_current_targets(self):
+        config = server.providers.normalize({'provider':'openai', 'vision_provider':'claude',
+                                             'vision_model':'vision-test'})
+        request = dict(session_id='session-old-run', prompt='Revenue', document_ids=['d1'])
+
+        def post_run():
+            raw = json.dumps(request).encode()
+            handler = Mock(path='/api/runs', rfile=io.BytesIO(raw),
+                           headers={'Content-Type':'application/json','Content-Length':str(len(raw))})
+            server.Handler.do_POST(handler)
+            return handler.respond.call_args.args
+
+        with patch.object(server,'settings',return_value=config), patch.object(server.threading,'Thread') as worker:
+            notice, status = post_run()
+            self.assertEqual(status,409)
+            self.assertEqual([target['kind'] for target in notice['remote_targets']],['text','vision'])
+            request['confirmed_remote_targets'] = notice['remote_targets']
+            request['processing_mode'] = 'text'
+            notice, status = post_run()
+            self.assertEqual(status,409)
+            self.assertEqual([target['kind'] for target in notice['remote_targets']],['text'])
+            worker.assert_not_called()
+            with server.connection() as db:
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0],1)
+
+            request['confirmed_remote_targets'] = notice['remote_targets']
+            response, = post_run()
+            self.addCleanup(server.JOBS.pop,response['id'],None)
+            worker.return_value.start.assert_called_once()
+            self.assertIs(worker.call_args.kwargs['args'][-1],config)
+
+    def test_remote_vision_is_independent_of_local_text_provider(self):
+        config = server.providers.normalize({'vision_provider':'claude','vision_model':'vision-test'})
+        for mode in ('auto','manual'):
+            targets = server.providers.remote_extraction_targets(config,mode)
+            self.assertEqual([target['kind'] for target in targets],['vision'])
+        self.assertEqual(server.providers.remote_extraction_targets(config,'text'),[])
+        config['providers'][0]['base_url'] = 'https://remote-ollama.example'
+        targets = server.providers.remote_extraction_targets(config,'text')
+        self.assertEqual([target['kind'] for target in targets],['text'])
+
     def test_interrupted_runs_are_recoverable_as_failed_turns(self):
         with server.connection() as db:db.execute("UPDATE runs SET status='running'")
         ws.mark_interrupted(server.connection)

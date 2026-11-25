@@ -1,6 +1,7 @@
 """Locally stored provider profiles and protocol adapters."""
 import copy
 import json
+from ipaddress import ip_address
 import os
 import re
 import uuid
@@ -49,6 +50,30 @@ def public_settings(config):
         profile['key_set'] = bool(api_key(profile))
         profile.pop('api_key', None)
     return result
+
+
+def remote_extraction_targets(config, mode):
+    """Describe the non-loopback endpoints an extraction can send data to."""
+    profiles = {profile['id']: profile for profile in config['providers']}
+    text = profiles[config['provider']]
+    candidates = [('text', text, text['model'])]
+    vision = profiles.get(config['vision_provider'])
+    if mode != 'text' and vision and config['vision_model']:
+        candidates.append(('vision', vision, config['vision_model']))
+
+    targets = []
+    for kind, profile, model in candidates:
+        host = urlsplit(profile['base_url']).hostname
+        if host in ('localhost', 'localhost.'):
+            continue
+        try:
+            if ip_address(host).is_loopback:
+                continue
+        except ValueError:
+            pass
+        targets.append(dict(kind=kind, provider=profile['id'], name=profile['name'],
+                            model=model, endpoint=profile['base_url']))
+    return targets
 
 
 def update(config, body):

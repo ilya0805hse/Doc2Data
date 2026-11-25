@@ -236,7 +236,7 @@ class VisualIntegrationTests(unittest.TestCase):
     def test_agent_inspects_and_cites_image(self):
         def call(name,args):
             return dict(role='assistant',content=None,tool_calls=[dict(id='call',type='function',function=dict(name=name,arguments=json.dumps(args)))])
-        def model(config,messages,tools=None):
+        def model(config,messages,tools=None, **kwargs):
             if tools==[]:return self.response('estimated')
             if messages[-1]['role']!='tool':return call('inspect_visual',dict(document_id=self.doc,asset_id='a1',question='Read total'))
             evidence=json.loads(messages[-1]['content'])
@@ -257,14 +257,15 @@ class VisualIntegrationTests(unittest.TestCase):
     def test_visual_placeholders_cannot_be_cited(self):
         answer=dict(role='assistant',content=None,tool_calls=[dict(id='call',type='function',function=dict(name='submit_extraction',arguments=dict(summary='Bad',columns=['Total'],rows=[dict(values=[120],cell_references=[[self.doc+':c1']])])) )])
         server.JOBS['visual-run']={'status':'running','events':[]}
-        with patch.object(server,'provider_call',return_value=answer):
+        with patch.object(server,'provider_call',side_effect=[answer, RuntimeError('Provider stopped')]):
             server.run_agent('visual-run','Read total',[self.doc],self.config)
         self.assertEqual(server.JOBS['visual-run']['status'],'error')
+        self.assertIn('Tool needs correction', [event['title'] for event in server.JOBS['visual-run']['events']])
 
     def test_unselected_visual_cannot_reach_provider(self):
         answer=dict(role='assistant',content=None,tool_calls=[dict(id='call',type='function',function=dict(name='inspect_visual',arguments=dict(document_id='other',asset_id='a1',question='Read')))])
         server.JOBS['visual-run']={'status':'running','events':[]}
-        with patch.object(server,'provider_call',return_value=answer),patch.object(server,'inspect_visual') as vision:
+        with patch.object(server,'provider_call',side_effect=[answer, RuntimeError('Provider stopped')]),patch.object(server,'inspect_visual') as vision:
             server.run_agent('visual-run','Read total',[self.doc],self.config)
         vision.assert_not_called()
 
@@ -299,7 +300,7 @@ class VisualIntegrationTests(unittest.TestCase):
             server.inspect_visual(self.config,self.doc,'a1','Read')
         answer=dict(role='assistant',content=None,tool_calls=[dict(id='call',type='function',function=dict(name='inspect_visual',arguments=dict(document_id=self.doc,asset_id='a1',question='Read')))])
         server.JOBS['visual-run']={'status':'running','events':[],'processing_mode':'text'}
-        with patch.object(server,'provider_call',return_value=answer) as model,patch.object(server,'inspect_visual') as vision:
+        with patch.object(server,'provider_call',side_effect=[answer, RuntimeError('Provider stopped')]) as model,patch.object(server,'inspect_visual') as vision:
             server.run_agent('visual-run','Read',[self.doc],self.config)
         vision.assert_not_called()
         for call in model.call_args_list:
@@ -310,7 +311,7 @@ class VisualIntegrationTests(unittest.TestCase):
         crop=dict(x=.1,y=.1,width=.5,height=.5)
         server.JOBS['visual-run']={'status':'running','events':[],'processing_mode':'manual',
                                   'visual_selections':[dict(document_id=self.doc,asset_id='a1',crop=crop)]}
-        def model(config,messages,tools=None):
+        def model(config,messages,tools=None, **kwargs):
             if tools==[]:return self.response()
             self.assertNotIn('inspect_visual',[t['function']['name'] for t in tools])
             evidence=json.loads(next(m['content'].split(': ',1)[1] for m in messages if m.get('content','') and m['content'].startswith('User-selected visual evidence:')))[0]

@@ -26,8 +26,8 @@ cd /Users/i.a.chesnokov-posadskii/Desktop/DocToData
 ## Workflow
 
 1. Upload PDF, DOCX, XLSX, XLS, CSV, or TXT files (25 MB each).
-2. Open **Model providers**. Choose Ollama, OpenAI, or DeepSeek and enter a tool-capable model name. For Ollama, start the local server and install a tool-capable model; **Find installed models** discovers available names. For cloud providers, add an API key or set `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` before starting the server.
-3. Select documents and describe your desired fields. Use ⌘/Ctrl + Enter to run.
+2. Open **Model providers**. Choose a provider and use **Fetch models** to find and select a tool-capable model. For Ollama, start the local server and install the model first. For cloud providers, add an API key or set `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` before starting the server.
+3. Select documents and describe your desired fields. Use ⌘/Ctrl + Enter to run. If the run can send text or images to a non-loopback provider, confirm the listed destinations above the composer before it starts.
 4. Inspect activity, review references, and export CSV or JSON. Requests, results, activity, and failures persist in the selected session.
 
 ## Implementation
@@ -35,7 +35,7 @@ cd /Users/i.a.chesnokov-posadskii/Desktop/DocToData
 - PDF text extraction via pypdf, Word via python-docx, Excel via openpyxl/xlrd.
 - Source-addressable chunks retain PDF pages, Word paragraphs/table rows, or spreadsheet sheet/row locations.
 - Local lexical RAG uses IDF-weighted keyword ranking. It does not require an embedding model or vector database.
-- Up to 10 agent iterations, with `search_documents`, `read_document`, `list_visuals`, `inspect_visual`, and `submit_extraction` tools.
+- Extraction runs are limited to 50 iterations or 10 minutes, with `search_documents`, `read_document`, `list_visuals`, `inspect_visual`, and `submit_extraction` tools.
 - Ollama native `/api/chat`; OpenAI and DeepSeek Chat Completions tool calling. DeepSeek response messages, including reasoning fields, are preserved between tool turns.
 - Output validation checks table dimensions and a separate citation list for every non-null cell against passages actually exposed to the agent. This validates citation existence, not semantic correctness; inspect references for important data.
 - SQLite stores parsed text, completed runs, and settings in `.data/workspace.db`. Keys are kept on the server and not returned to the browser. The database is local plaintext, not an encrypted credential vault.
@@ -47,7 +47,7 @@ Scanned PDFs and embedded Word pictures are indexed with optional local OCR and 
 
 Selected source passages are sent to the chosen provider on each run. Ollama stays local if its configured URL is local; OpenAI and DeepSeek process these passages in the cloud. Google Fonts is used for optional typography, with system-font fallback.
 
-Set `PORT` to change the default port, or `DOCTODATA_HOME` to change the data directory. Set `DOCTODATA_OLLAMA_TIMEOUT` to override the Ollama request timeout in seconds (default: 600), or `DOCTODATA_PROVIDER_TIMEOUT` for other providers (default: 120). Values must be positive, finite numbers. Restart the server after changing these settings. These are socket timeouts, not total extraction deadlines; a run can make multiple model requests.
+Set `PORT` to change the default port, or `DOCTODATA_HOME` to change the data directory. Set `DOCTODATA_OLLAMA_TIMEOUT` to override the Ollama request timeout in seconds (default: 600), or `DOCTODATA_PROVIDER_TIMEOUT` for other providers (default: 120). Values must be positive, finite numbers. Restart the server after changing these settings. Each request uses the configured socket timeout or the remaining time in the 10-minute run budget, whichever is shorter.
 
 For example, allow Ollama 15 minutes when waiting for a response:
 
@@ -93,7 +93,7 @@ Base URLs exclude the final request path: the app adds `/chat/completions`, `/me
 
 Provider profiles, keys, and sessions persist in the local SQLite database under `.data/` (or `DOCTODATA_HOME`). Existing provider settings migrate automatically when loaded and are written in the new format on the next save. Keys remain plaintext in that local database; the settings API returns only whether a key is configured. Blank key fields preserve saved keys; **Remove stored API key** clears the database value. Environment credentials still apply: `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`, and `ANTHROPIC_API_KEY`. Selected source passages are sent to the chosen endpoint during extraction.
 
-Model discovery loads automatically for saved connections and shortly after entering a key. Use **Fetch available models** to refresh, then choose from **Available models** and click **Save and use provider**. Discovery uses the draft connection without saving it or changing the active provider. OpenAI-compatible endpoints (including [DeepSeek](https://api-docs.deepseek.com/api/list-models/)) use `/models`; Claude uses its paginated Models API; Ollama lists installed models. Manual entry remains available for endpoints without discovery. Returned models are not guaranteed to support extraction tools. If you change a connection's base URL, re-enter its key before fetching models from the new address.
+Use **Fetch models** after configuring the connection. Choose from **Available models** or select **+ Add new model** to enter a name, then click **Save and use provider**. Text and vision share fetched lists for the same connection while the dialog is open. Discovery uses the draft connection without saving it or changing the active provider. OpenAI-compatible endpoints (including [DeepSeek](https://api-docs.deepseek.com/api/list-models/)) use `/models`; Claude uses its paginated Models API; Ollama lists installed models. Manual entry remains available for endpoints without discovery. Returned models are not guaranteed to support extraction tools. If you change a connection's base URL, re-enter its key before fetching models from the new address.
 
 Session actions are available from the three-dot button beside each session in the left panel: **Pin / Unpin**, **Rename**, and **Delete**. Pinned sessions stay above other sessions and persist in the local database. The chat header's right-hand button expands or collapses the evidence viewer. Existing databases receive an additive `sessions.pinned` column with existing sessions unpinned.
 

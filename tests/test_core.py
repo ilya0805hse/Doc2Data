@@ -62,19 +62,37 @@ class AgentTests(unittest.TestCase):
     def call(self,name,args):
         return {'role':'assistant','content':None,'tool_calls':[{'id':'call1','type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}
     def test_agent_search_and_submit_persists_citations(self):
-        answers=[self.call('search_documents',{'query':'invoice total'}),self.call('submit_extraction',{'summary':'One row','columns':['Vendor','Total'],'rows':[{'values':['Acme',120],'cell_references':[['d1:c1'],['d1:c1']]}]})]
+        answers=[self.call('search_documents',{'query':'invoice total'})] * 10
+        answers.append(self.call('submit_extraction',{'summary':'One row','columns':['Vendor','Total'],'rows':[{'values':['Acme',120],'cell_references':[['d1:c1'],['d1:c1']]}]}))
         with patch.object(server,'provider_call',side_effect=answers) as provider:
             server.run_agent('test','Extract totals',['d1'],{'provider':'openai','model':'test'})
         self.assertEqual(server.JOBS['test']['status'],'complete')
         self.assertEqual(server.JOBS['test']['result']['references']['d1:c1']['document'],'invoice.txt')
-        self.assertEqual(provider.call_count,2)
+        self.assertEqual(provider.call_count,11)
         with server.connection() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0],1)
-    def test_invalid_citation_rejected_and_loop_bounded(self):
+    def test_invalid_citation_rejected(self):
         answer=self.call('submit_extraction',{'summary':'Bad','columns':['Total'],'rows':[{'values':[120],'cell_references':[['invented:c1']]}]})
-        with patch.object(server,'provider_call',return_value=answer) as provider:
+        with patch.object(server,'provider_call',side_effect=[answer, RuntimeError('Provider stopped')]) as provider:
             server.run_agent('test','Extract totals',['d1'],{'provider':'openai','model':'test'})
-        self.assertEqual(server.JOBS['test']['status'],'error');self.assertEqual(provider.call_count,10)
+        self.assertEqual(server.JOBS['test']['status'],'error')
+        self.assertEqual(provider.call_count,2)
+        self.assertIn('Tool needs correction', [event['title'] for event in server.JOBS['test']['events']])
         with server.connection() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0],0)
+    def test_iteration_limit_recommends_a_stronger_model(self):
+        answer = {'role':'assistant','content':'Working'}
+        with patch.object(server,'provider_call',return_value=answer) as provider:
+            server.run_agent('test','Extract totals',['d1'],{'provider':'ollama','model':'test'})
+        self.assertEqual(provider.call_count,50)
+        self.assertIn('stronger tool-capable model',server.JOBS['test']['error'])
+
+    def test_run_deadline_stops_after_provider_returns(self):
+        answer = {'role':'assistant','content':'Working'}
+        with patch.object(server.time,'monotonic',side_effect=[0, 599, 600]), patch.object(server,'provider_call',return_value=answer) as provider:
+            server.run_agent('test','Extract totals',['d1'],{'provider':'ollama','model':'test'})
+        provider.assert_called_once()
+        self.assertEqual(provider.call_args.kwargs['deadline'],600)
+        self.assertIn('10-minute limit',server.JOBS['test']['error'])
+
     def test_cancel_prevents_provider_call(self):
         server.JOBS['test']['cancelled']=True
         with patch.object(server,'provider_call') as provider:
