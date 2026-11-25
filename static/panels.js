@@ -47,14 +47,15 @@ const panelLayout = (() => {
         for (const [side, toggle, open, name, size] of [['left', explorerToggle, leftOpen, 'explorer', left], ['right', evidenceToggle, rightOpen, 'evidence', right]]) {
             toggle.setAttribute('aria-expanded', String(open));
             toggle.setAttribute('aria-controls', `${name}-pane`);
-            toggle.setAttribute('aria-label', `${open ? 'Collapse' : 'Expand'} ${name} panel`);
+            toggle.setAttribute('aria-label', t(open ? `Collapse ${name} panel` : `Expand ${name} panel`));
             toggle.title = toggle.getAttribute('aria-label');
             const handle = document.querySelector(`#resize-${name}`);
             const [min, max] = limits(side);
+            handle.title = t('Drag to resize; use arrow keys when focused. Double-click to reset.');
             handle.setAttribute('aria-valuemin', Math.round(min));
             handle.setAttribute('aria-valuemax', Math.round(Math.max(min, max)));
             handle.setAttribute('aria-valuenow', Math.round(size));
-            handle.setAttribute('aria-valuetext', `${Math.round(size)} pixels`);
+            handle.setAttribute('aria-valuetext', t('{0} pixels', Math.round(size)));
         }
     }
     function setEvidenceOpen(open) {
@@ -78,7 +79,6 @@ const panelLayout = (() => {
     document.querySelector('#collapse-evidence').onclick = () => { setEvidenceOpen(false); evidenceToggle.focus(); };
     for (const [side, name, panel] of [['left', 'explorer', explorer], ['right', 'evidence', evidence]]) {
         const handle = document.querySelector(`#resize-${name}`);
-        handle.title = 'Drag to resize; use arrow keys when focused. Double-click to reset.';
         let drag = null;
         function resize(value) { const [min, max] = limits(side); widths[side] = clamp(value, min, max); render(); }
         handle.onpointerdown = event => {
@@ -103,6 +103,7 @@ const panelLayout = (() => {
         handle.ondblclick = () => { widths[side] = side === 'left' ? 252 : null; render(); save(); };
     }
     window.addEventListener('resize', render);
+    document.addEventListener('app-language-change', render);
     render();
     return {setEvidenceOpen};
 })();

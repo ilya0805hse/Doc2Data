@@ -131,3 +131,44 @@ Selections are scoped to the current session draft and selected documents (up to
 **Vibing** lets the model design the output. In **Strict**, choose **Edit table** to fix the column names and order and optionally define the rows. **Mixed** preserves that starting layout and lets the model append relevant rows and columns. The result marks added columns and rows appended after predefined rows.
 
 Enter fixed labels or values in your template and leave cells blank for extraction. With headers only, the model creates rows for matching records. You can also import a UTF-8 CSV or the first worksheet of an XLSX file, choose the header row, and decide whether to keep populated cells as fixed values. Extracted cells retain their clickable citations. Fixed cells are marked as provided by you.
+
+## Interface language
+
+DocToData opens in Russian by default. Use the language selector in the header to switch to English. The browser remembers your choice.
+
+## NEREL_bench evaluation
+
+`datasets/NEREL_bench/` contains the four test Parquet files from
+[bond005/NEREL_bench](https://huggingface.co/datasets/bond005/NEREL_bench/tree/28bc48dba039209c0197964b220b22f41a7d293d)
+at revision `28bc48dba039209c0197964b220b22f41a7d293d` (3,906 examples).
+
+Install the benchmark-only dependency with `.venv/bin/python -m pip install pyarrow`.
+Start DocToData and configure its extraction model in the UI. From the project root, run a small sample first:
+
+```sh
+.venv/bin/python scripts/benchmark_nerel.py --task all --limit 1 --output .data/nerel-smoke
+```
+
+Use `--task all --limit 0` for the entire test split and choose a new output
+directory for each run. `--offset` selects a zero-based starting row within each
+task. A full run submits 3,906 extraction jobs to the configured provider and
+may incur provider charges. The script creates one benchmark workspace per run,
+one TXT upload and one fresh session per example. The source text reaches the
+model through the usual DocToData retrieval path. The script adapts the
+benchmark instruction to DocToData's table format and keeps the reference
+answer local.
+
+- `examples.jsonl` contains the expected and predicted answers, raw DocToData
+  results with citations when available, and per-example scores or errors.
+- `metrics.json` reports the models observed, counts and scores by task.
+  Entity recognition and relation extraction use set exact match and micro
+  precision, recall and F1. Relation extraction scores related entity names
+  as requested by the dataset instructions. Matching ignores order,
+  duplicates and whitespace differences, and preserves case and punctuation.
+  Definitions use whitespace-normalized exact match and mean token F1.
+  Token F1 measures lexical overlap and can assign low scores to valid
+  paraphrases.
+- Failed examples count as missing predictions and receive zero exact match
+  credit. Check the failure count alongside the quality metrics. The script
+  returns a nonzero exit code if any example fails and stops the run on a
+  job polling timeout.
